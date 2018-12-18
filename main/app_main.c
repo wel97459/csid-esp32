@@ -13,7 +13,7 @@
 #include "fonts.h"
 #include "ssd1306.h"
 
-#include "commando.inc"
+#include "Hexadecimal.h"
 
 // from ESP32 Audio shield demo
 
@@ -27,7 +27,7 @@ static QueueHandle_t i2s_event_queue;
 #define I2C_EXAMPLE_MASTER_FREQ_HZ    100000     /*!< I2C master clock frequency */
 
 
-#define SAMPLE_RATE     (22050)
+#define SAMPLE_RATE     (18000)
 #define I2S_CHANNEL        I2S_NUM_0
 // #define WAVE_FREQ_HZ    (200)
 #define PI 3.14159265
@@ -65,7 +65,7 @@ static void setup_triangle_sine_waves()
     unsigned char *ptr = (unsigned char *)samples_data;
 
     while (left > 0) {
-        int written = i2s_write_bytes(I2S_CHANNEL, (const char *)ptr, left, 100 / portTICK_RATE_MS);
+        int written = i2s_write_bytes(I2S_CHANNEL, (const char *)ptr, left, 1);
         pos += written;
         ptr += written;
         left -= written;
@@ -76,17 +76,15 @@ static void setup_triangle_sine_waves()
 }
 
 
-
-
-
-
-
-
-
-
 void audiorenderer_loop(void *pvParameter) {
     while(1) {
         setup_triangle_sine_waves();
+    }
+}
+
+void cpurenderer_loop(void *pvParameter) {
+    while(1) {
+        runCPU(1);
     }
 }
 
@@ -126,69 +124,22 @@ void audioplayer_start() {
     i2s_zero_dma_buffer(I2S_CHANNEL);
 }
 
-static void i2c_example_master_init()
-{
-    int i2c_master_port = I2C_EXAMPLE_MASTER_NUM;
-    i2c_config_t conf;
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = I2C_EXAMPLE_MASTER_SDA_IO;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = I2C_EXAMPLE_MASTER_SCL_IO;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = I2C_EXAMPLE_MASTER_FREQ_HZ;
-    i2c_param_config(i2c_master_port, &conf);
-    i2c_driver_install(i2c_master_port, conf.mode,
-                       I2C_EXAMPLE_MASTER_RX_BUF_DISABLE,
-                       I2C_EXAMPLE_MASTER_TX_BUF_DISABLE, 0);
-}
-
-void screen_loop(void *pvParameter) {
-    while(1) {
-        SSD1306_DrawFilledRectangle(0, 32, 128, 32, SSD1306_COLOR_BLACK);
-        short *x = (short *)&waveform_buffer;
-        for(int i=0; i<128; i++) {
-            SSD1306_DrawPixel(i, 48 + (x[i] / 2000), SSD1306_COLOR_WHITE);
-        }
-        SSD1306_UpdateScreen();
-        vTaskDelay(4 / portTICK_PERIOD_MS);
-    }
-}
-
 void app_main() {
     printf("-----------------------------------\n");
     printf("HELLO WORLD\n");
     printf("-----------------------------------\n");
 
-    i2c_example_master_init();
-    SSD1306_Init();
-    SSD1306_Fill(SSD1306_COLOR_BLACK);
-    SSD1306_GotoXY(4, 4);
-    SSD1306_Puts("ESP32-SID", &Font_11x18, SSD1306_COLOR_WHITE);
-    SSD1306_UpdateScreen();
-
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-
-    SSD1306_Fill(SSD1306_COLOR_BLACK);
-    SSD1306_UpdateScreen();
-
     audioplayer_init();
     audioplayer_start();
 
-    libcsid_init(22050, SIDMODEL_6581);
-    libcsid_load((unsigned char *)&music_Commando_sid, music_Commando_sid_len, 0);
+    libcsid_init(SAMPLE_RATE, SIDMODEL_6581);
+    libcsid_load((unsigned char *)&rawData, sizeof(rawData), 0);
 
     printf("SID Title: %s\n", libcsid_gettitle());
     printf("SID Author: %s\n", libcsid_getauthor());
     printf("SID Info: %s\n", libcsid_getinfo());
 
-    SSD1306_GotoXY(2, 2);
-    SSD1306_Puts(libcsid_gettitle(), &Font_7x10, SSD1306_COLOR_WHITE);
-    SSD1306_GotoXY(2, 16);
-    SSD1306_Puts(libcsid_getauthor(), &Font_7x10, SSD1306_COLOR_WHITE);
 
-    SSD1306_UpdateScreen();
-
-    xTaskCreate(&audiorenderer_loop, "audio", 16384, NULL, 5, NULL);
-    xTaskCreate(&screen_loop, "screen", 16384, NULL, 35, NULL);
+    xTaskCreatePinnedToCore(&audiorenderer_loop, "audio", 16384, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&cpurenderer_loop, "cpu", 16384, NULL, 5, NULL, 0);
 }
-

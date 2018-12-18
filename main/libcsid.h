@@ -18,5 +18,5 @@ extern const char *libcsid_getinfo();
 extern const char *libcsid_gettitle();
 
 extern void libcsid_render(unsigned short *output, int numsamples);
-
+extern void runCPU(int len);
 #endif
