@@ -107,7 +107,7 @@ static void init_sdCard()
 
 static void setup_triangle_sine_waves()
 {
-    int samples = 360;
+    int samples = 250;
     unsigned short *mono_samples_data = (unsigned short *)malloc(2 * samples);
     unsigned short *samples_data = (unsigned short *)malloc(2 * 2 * samples);
 
@@ -144,16 +144,20 @@ static void setup_triangle_sine_waves()
 
 
 void audiorenderer_loop(void *pvParameter) {
+    int c=0;
     while(playerAudio == 1) {
         setup_triangle_sine_waves();
+        if(c++>20){c=0; vTaskDelay(1);}
     }
     playerAudio = STOPED;
     vTaskDelete(NULL);
 }
 
 void cpurenderer_loop(void *pvParameter) {
+    int c=0;
     while(playerCPU == 1) {
         runCPU(1);
+        if(c++>500){c=0; vTaskDelay(1);}
     }
     playerCPU = STOPED;
     vTaskDelete(NULL);
@@ -220,31 +224,36 @@ void sd_player_gpio_handler_task(void *pvParams)
         controls_destroy();
         return;
     }
+    int32_t mt = xTaskGetTickCount();
 
     uint32_t io_num;
     for (;;) {
         if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
 
             ESP_LOGI(TAG, "GPIO[%d] intr, val: %d", io_num, gpio_get_level(io_num));
-            vTaskDelay(250 / portTICK_PERIOD_MS);
-            if (playerAudio == PLAYING) playerAudio = STOPING;
-            if (playerCPU == PLAYING) playerCPU = STOPING;
+            if(mt < xTaskGetTickCount()){
+                ESP_LOGI(TAG, "mt: %u   t:%u", mt, xTaskGetTickCount());
+                mt = xTaskGetTickCount()+100;
 
-            while(playerAudio != STOPED && playerCPU != STOPED) {
-                vTaskDelay(20 / portTICK_PERIOD_MS);
-            }
+                if (playerAudio == PLAYING) playerAudio = STOPING;
+                if (playerCPU == PLAYING) playerCPU = STOPING;
 
-            fgets(filenameOffset, 120, f);
-            if(feof(f)) rewind(f);
+                while(playerAudio != STOPED && playerCPU != STOPED) {
+                    vTaskDelay(20 / portTICK_PERIOD_MS);
+                }
 
-            ESP_LOGI(TAG, "Filename: %s", filename);
+                fgets(filenameOffset, 120, f);
+                if(feof(f)) rewind(f);
 
-            if(libcsid_loadFile(filename, 0)){
-                printf("SID Title: %s\n", libcsid_gettitle());
-                printf("SID Author: %s\n", libcsid_getauthor());
-                printf("SID Info: %s\n", libcsid_getinfo());
+                ESP_LOGI(TAG, "Filename: %s", filename);
 
-                playerStart();
+                if(libcsid_loadFile(filename, 0)){
+                    ESP_LOGI(TAG, "SID Title: %s\n", libcsid_gettitle());
+                    ESP_LOGI(TAG, "SID Author: %s\n", libcsid_getauthor());
+                    ESP_LOGI(TAG, "SID Info: %s\n", libcsid_getinfo());
+
+                    playerStart();
+                }
             }
         }
     }
