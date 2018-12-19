@@ -33,7 +33,7 @@ static QueueHandle_t i2s_event_queue;
 #define I2C_EXAMPLE_MASTER_FREQ_HZ    100000     /*!< I2C master clock frequency */
 
 
-#define SAMPLE_RATE     (18000)
+#define SAMPLE_RATE CONFIG_SAMPLE_RATE
 #define I2S_CHANNEL        I2S_NUM_0
 // #define WAVE_FREQ_HZ    (200)
 #define PI 3.14159265
@@ -214,7 +214,7 @@ void sd_player_gpio_handler_task(void *pvParams)
     char filename[128] = "/sdcard/";
     char *filenameOffset = filename+8;
 
-    f = fopen("/sdcard/sidlist", "r");
+    f = fopen(CONFIG_PLAYLIST_FILE, "r");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file for reading");
         controls_destroy();

@@ -1,0 +1,39 @@
+menu "SID Player"
+
+menu "Audio Output"
+
+choice
+    prompt "Select Audio Sample Rate"
+    default AUDIO_18000KHZ
+    help
+        This option selects the audio Sample Rate
+
+    config AUDIO_22050KHZ
+        bool "22050KHZ"
+    config AUDIO_20000KHZ
+        bool "20000KHZ"
+    config AUDIO_18000KHZ
+        bool "18000KHZ"
+    config AUDIO_15000KHZ
+        bool "15000KHZ"
+    config AUDIO_11000KHZ
+        bool "11000KHZ"
+endchoice
+
+config SAMPLE_RATE
+    int
+    default 22050 if AUDIO_22050KHZ
+    default 20000 if AUDIO_20000KHZ
+    default 18000 if AUDIO_18000KHZ
+    default 15000 if AUDIO_15000KHZ
+    default 11000 if AUDIO_11000KHZ
+
+endmenu
+
+config PLAYLIST_FILE
+    string "SIDs Playlist"
+	default "/sdcard/sidlist"
+	help
+		/sdcard/sidlist is the name of the file in the SD card.
+
+endmenu
