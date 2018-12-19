@@ -12,6 +12,7 @@
 extern void libcsid_init(int samplerate, int sidmodel);
 
 extern int libcsid_load(unsigned char *buffer, int bufferlen, int subtune);
+extern int libcsid_loadFile(char* name, int _subtune);
 
 extern const char *libcsid_getauthor();
 extern const char *libcsid_getinfo();

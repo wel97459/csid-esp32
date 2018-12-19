@@ -1,21 +1,27 @@
 /* Based on the ESP-IDF I2S Example */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "driver/i2s.h"
 #include "esp_system.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_vfs_fat.h"
+#include "driver/sdmmc_host.h"
+#include "driver/sdspi_host.h"
+#include "sdmmc_cmd.h"
+#include "app_main.h"
+#include "controls.h"
 
 #include <stdio.h>
 #include <math.h>
 
 #include <libcsid.h>
 
-#include "xi2c.h"
-#include "fonts.h"
-#include "ssd1306.h"
-
-#include "Hexadecimal.h"
+//#include "Hexadecimal.h"
 
 // from ESP32 Audio shield demo
+#define TAG "app_main"
 
 static QueueHandle_t i2s_event_queue;
 
@@ -35,12 +41,73 @@ static QueueHandle_t i2s_event_queue;
 // #define SAMPLE_PER_CYCLE (SAMPLE_RATE / WAVE_FREQ_HZ)
 #define HALF_SAMPLERATE (SAMPLE_RATE / 2)
 
+#define STOPED 0
+#define PLAYING 1
+#define STOPING 2
+
+uint8_t playerAudio = STOPED;
+uint8_t playerCPU = STOPED;
+
 unsigned long phase = 0;
 unsigned short waveform_buffer[128] = { 0, };
 
+static void init_sdCard()
+{
+    ESP_LOGI(TAG, "Initializing SD card");
+
+    sdmmc_host_t sdHost = SDMMC_HOST_DEFAULT();
+
+    // This initializes the slot without card detect (CD) and write protect (WP) signals.
+    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    // Use settings defined above to initialize SD card and mount FAT filesystem.
+    // Note: esp_vfs_fat_sdmmc_mount is an all-in-one convenience function.
+    // Please check its source code and implement error recovery when developing
+    // production applications.
+
+    // To use 1-line SD mode, uncomment the following line:
+    // host.flags = SDMMC_HOST_FLAG_1BIT;
+
+    // GPIOs 15, 2, 4, 12, 13 should have external 10k pull-ups.
+    // Internal pull-ups are not sufficient. However, enabling internal pull-ups
+    // does make a difference some boards, so we do that here.
+    gpio_set_pull_mode(15, GPIO_PULLUP_ONLY);   // CMD, needed in 4- and 1- line modes
+    gpio_set_pull_mode(2, GPIO_PULLUP_ONLY);    // D0, needed in 4- and 1-line modes
+    gpio_set_pull_mode(4, GPIO_PULLUP_ONLY);    // D1, needed in 4-line mode only
+    gpio_set_pull_mode(12, GPIO_PULLUP_ONLY);   // D2, needed in 4-line mode only
+    gpio_set_pull_mode(13, GPIO_PULLUP_ONLY);   // D3, needed in 4- and 1-line modes
+    gpio_pullup_en(GPIO_NUM_12);
+	gpio_pullup_en(GPIO_NUM_2);
+    // Options for mounting the filesystem.
+    // If format_if_mount_failed is set to true, SD card will be partitioned and
+    // formatted in case when mounting fails.
+
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &sdHost, &slot_config, &mount_config, &card);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem. "
+                "If you want the card to be formatted, set format_if_mount_failed = true.");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize the card (%s). "
+                "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
+        }
+        return;
+    }
+
+    // Card has been initialized, print its properties
+    sdmmc_card_print_info(stdout, card);
+}
+
 static void setup_triangle_sine_waves()
 {
-    int samples = 300;
+    int samples = 360;
     unsigned short *mono_samples_data = (unsigned short *)malloc(2 * samples);
     unsigned short *samples_data = (unsigned short *)malloc(2 * 2 * samples);
 
@@ -77,15 +144,19 @@ static void setup_triangle_sine_waves()
 
 
 void audiorenderer_loop(void *pvParameter) {
-    while(1) {
+    while(playerAudio == 1) {
         setup_triangle_sine_waves();
     }
+    playerAudio = STOPED;
+    vTaskDelete(NULL);
 }
 
 void cpurenderer_loop(void *pvParameter) {
-    while(1) {
+    while(playerCPU == 1) {
         runCPU(1);
     }
+    playerCPU = STOPED;
+    vTaskDelete(NULL);
 }
 
 void renderer_zero_dma_buffer() {
@@ -124,22 +195,71 @@ void audioplayer_start() {
     i2s_zero_dma_buffer(I2S_CHANNEL);
 }
 
+void  playerStart() {
+    playerAudio = PLAYING;
+    playerCPU = PLAYING;
+    xTaskCreatePinnedToCore(&audiorenderer_loop, "audio", 16384, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&cpurenderer_loop, "cpu", 16384, NULL, 5, NULL, 0);
+}
+
+void sd_player_gpio_handler_task(void *pvParams)
+{
+    gpio_handler_param_t *params = pvParams;
+    xQueueHandle gpio_evt_queue = params->gpio_evt_queue;
+
+    playerAudio = STOPED;
+    playerCPU = STOPED;
+
+    static FILE* f;
+    char filename[128] = "/sdcard/";
+    char *filenameOffset = filename+8;
+
+    f = fopen("/sdcard/sidlist", "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for reading");
+        controls_destroy();
+        return;
+    }
+
+    uint32_t io_num;
+    for (;;) {
+        if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
+
+            ESP_LOGI(TAG, "GPIO[%d] intr, val: %d", io_num, gpio_get_level(io_num));
+            vTaskDelay(250 / portTICK_PERIOD_MS);
+            if (playerAudio == PLAYING) playerAudio = STOPING;
+            if (playerCPU == PLAYING) playerCPU = STOPING;
+
+            while(playerAudio != STOPED && playerCPU != STOPED) {
+                vTaskDelay(20 / portTICK_PERIOD_MS);
+            }
+
+            fgets(filenameOffset, 120, f);
+            if(feof(f)) rewind(f);
+
+            ESP_LOGI(TAG, "Filename: %s", filename);
+
+            if(libcsid_loadFile(filename, 0)){
+                printf("SID Title: %s\n", libcsid_gettitle());
+                printf("SID Author: %s\n", libcsid_getauthor());
+                printf("SID Info: %s\n", libcsid_getinfo());
+
+                playerStart();
+            }
+        }
+    }
+}
+
 void app_main() {
     printf("-----------------------------------\n");
     printf("HELLO WORLD\n");
     printf("-----------------------------------\n");
 
+    init_sdCard();
+
     audioplayer_init();
     audioplayer_start();
-
     libcsid_init(SAMPLE_RATE, SIDMODEL_6581);
-    libcsid_load((unsigned char *)&rawData, sizeof(rawData), 0);
 
-    printf("SID Title: %s\n", libcsid_gettitle());
-    printf("SID Author: %s\n", libcsid_getauthor());
-    printf("SID Info: %s\n", libcsid_getinfo());
-
-
-    xTaskCreatePinnedToCore(&audiorenderer_loop, "audio", 16384, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(&cpurenderer_loop, "cpu", 16384, NULL, 5, NULL, 0);
+    controls_init(sd_player_gpio_handler_task, 2048, NULL);
 }

@@ -11,8 +11,14 @@
 
 #include <libcsid.h>
 
+#include "esp_err.h"
+#include "esp_log.h"
+
 typedef unsigned char byte;
 typedef unsigned char Uint8;
+
+
+#define TAG "libcsidlight"
 
 //global constants and variables
 #define C64_PAL_CPUCLK 985248.0
@@ -685,8 +691,110 @@ int libcsid_load(unsigned char *_buffer, int _bufferlen, int _subtune) {
   cSID_init(samplerate);
   init(subtune);
 
-  return 0;
+  return 1;
 }
+
+int libcsid_loadFile(char *filename, int _subtune) {
+  int readata, strend, subtune_amount, preferred_SID_model[3] = {8580.0, 8580.0, 8580.0};
+  unsigned int i, datalen, offs, loadaddr;
+  unsigned char *filedata;
+  subtune = _subtune;
+  static FILE* f;
+
+  f = fopen(filename, "r");
+  if (f == NULL) {
+      ESP_LOGE(TAG, "Failed to open file for reading");
+      return 0;
+  }
+
+  fseek( f , 0L , SEEK_END);
+  datalen = ftell( f );
+  rewind( f );
+  filedata = (byte *)malloc(datalen);
+
+  fread(filedata, sizeof(char), datalen, f);
+
+  fclose(f);
+
+  offs = filedata[7];
+  loadaddr = filedata[8] + filedata[9] ? filedata[8] * 256 + filedata[9] : filedata[offs] + filedata[offs + 1] * 256;
+  printf("\nOffset: $%4.4X, Loadaddress: $%4.4X \nTimermodes:", offs, loadaddr);
+
+  for (i = 0; i < 32; i++) {
+    timermode[31 - i] = (filedata[0x12 + (i >> 3)] & (byte)pow(2, 7 - i % 8)) ? 1 : 0;
+    printf(" %1d",timermode[31 - i]);
+  }
+
+  for (i = 0; i < MAX_DATA_LEN; i++) {
+    memory[i] = 0;
+  }
+
+  for (i = offs + 2; i < datalen; i++) {
+    if (loadaddr + i - (offs + 2) < MAX_DATA_LEN) {
+      memory[loadaddr + i - (offs + 2)] = filedata[i];
+    }
+  }
+
+  strend = 1;
+  for (i = 0; i < 32; i++) {
+    if (strend != 0) {
+      strend = SIDtitle[i] = filedata[0x16 + i];
+    } else {
+      strend = SIDtitle[i] = 0;
+    }
+  }
+
+  strend = 1;
+  for (i = 0; i < 32; i++) {
+    if (strend != 0) {
+      strend = SIDauthor[i] = filedata[0x36 + i];
+    } else {
+      strend = SIDauthor[i] = 0;
+    }
+  }
+
+  strend = 1;
+  for (i = 0; i < 32; i++) {
+    if (strend != 0) {
+      strend = SIDinfo[i] = filedata[0x56 + i];
+    } else {
+      strend = SIDinfo[i] = 0;
+    }
+  }
+
+  initaddr=filedata[0xA]+filedata[0xB]? filedata[0xA]*256+filedata[0xB] : loadaddr; playaddr=playaddf=filedata[0xC]*256+filedata[0xD]; printf("\nInit:$%4.4X,Play:$%4.4X, ",initaddr,playaddr);
+  subtune_amount=filedata[0xF];
+  preferred_SID_model[0] = (filedata[0x77]&0x30)>=0x20? 8580 : 6581;
+
+  printf("Subtunes:%d , preferred SID-model:%d", subtune_amount, preferred_SID_model[0]);
+
+  preferred_SID_model[1] = (filedata[0x77]&0xC0)>=0x80 ? 8580 : 6581;
+  preferred_SID_model[2] = (filedata[0x76]&3)>=3 ? 8580 : 6581;
+  SID_address[1] = filedata[0x7A]>=0x42 && (filedata[0x7A]<0x80 || filedata[0x7A]>=0xE0) ? 0xD000+filedata[0x7A]*16 : 0;
+  SID_address[2] = filedata[0x7B]>=0x42 && (filedata[0x7B]<0x80 || filedata[0x7B]>=0xE0) ? 0xD000+filedata[0x7B]*16 : 0;
+
+  SIDamount=1+(SID_address[1]>0)+(SID_address[2]>0); if(SIDamount>=2) printf("(SID1), %d(SID2:%4.4X)",preferred_SID_model[1],SID_address[1]);
+  if(SIDamount==3) printf(", %d(SID3:%4.4X)",preferred_SID_model[2],SID_address[2]);
+  if (requested_SID_model!=-1) printf(" (requested:%d)",requested_SID_model); printf("\n");
+
+  for (i=0;i<SIDamount;i++) {
+    if (requested_SID_model==8580 || requested_SID_model==6581) SID_model[i] = requested_SID_model;
+    else SID_model[i] = preferred_SID_model[i];
+  }
+
+  OUTPUT_SCALEDOWN = SID_CHANNEL_AMOUNT * 16 + 26;
+  if (SIDamount == 2) {
+    OUTPUT_SCALEDOWN /= 0.6;
+  } else if (SIDamount >= 3) {
+    OUTPUT_SCALEDOWN /= 0.4;
+  }
+
+  cSID_init(samplerate);
+  init(subtune);
+  free(filedata);
+  return 1;
+}
+
 
 void libcsid_render(unsigned short *_output, int _numsamples) {
   play(0, (Uint8 *)_output, _numsamples * 2);
